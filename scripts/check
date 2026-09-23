@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+checkout="${ZED_CHECKOUT:-$root/.checkout/zed}"
+
+[[ -d "$checkout/.git" ]] || { echo "run scripts/prepare first" >&2; exit 2; }
+git -C "$checkout" diff --check
+git -C "$checkout" status --short
+echo "baseline and patch stack checks passed"

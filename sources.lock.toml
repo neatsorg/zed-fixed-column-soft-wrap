@@ -1,0 +1,9 @@
+[zed]
+repository = "https://github.com/zed-industries/zed"
+version = "v1.20.2"
+commit = "7c451e694f3c52ee0aeb01d7e28b5fa18cd0ad2f"
+
+[patch_stack]
+format = 1
+series = "patches/series"
+

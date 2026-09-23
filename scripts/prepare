@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+checkout="${ZED_CHECKOUT:-$root/.checkout/zed}"
+source_repo="${ZED_SOURCE_REPOSITORY:-https://github.com/zed-industries/zed.git}"
+source_commit="$(sed -n 's/^commit = "\([0-9a-f]\{40\}\)"/\1/p' "$root/sources.lock.toml" | head -n 1)"
+
+[[ -n "$source_commit" ]] || { echo "missing zed commit" >&2; exit 2; }
+
+if [[ -e "$checkout/.git" ]]; then
+  current=$(git -C "$checkout" rev-parse HEAD)
+  [[ "$current" == "$source_commit" ]] || {
+    echo "checkout is at $current, expected $source_commit" >&2
+    exit 3
+  }
+else
+  mkdir -p "$(dirname "$checkout")"
+  git clone "$source_repo" "$checkout"
+  git -C "$checkout" checkout --detach "$source_commit"
+fi
+
+[[ -z "$(git -C "$checkout" status --porcelain)" ]] || {
+  echo "checkout has local changes; use a clean checkout" >&2
+  exit 4
+}
+
+while IFS= read -r entry; do
+  [[ -z "$entry" || "$entry" == \#* ]] && continue
+  git -C "$checkout" apply --check "$root/$entry"
+  git -C "$checkout" apply "$root/$entry"
+done < "$root/patches/series"
+
+echo "prepared $checkout at $source_commit"
+
