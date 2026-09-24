@@ -1,0 +1,11 @@
+Copyright (C) 2026 Sayawaka.
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This repository contains an unofficial patch for Zed. The target upstream
+commit is recorded in sources.lock.toml.
+It is not an official Zed release and is not endorsed by Zed Industries.
+
+Original scripts, documentation, and patch metadata in this repository are
+licensed under GPL-3.0-or-later. Zed-derived code retains its upstream
+copyright and license notices. The applicable license of each modified
+upstream file must be preserved when applying or distributing the patch.
