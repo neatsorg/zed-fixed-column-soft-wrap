@@ -1,0 +1,324 @@
+diff --git a/crates/editor/src/config.rs b/crates/editor/src/config.rs
+index 6676a79..9547125 100644
+--- a/crates/editor/src/config.rs
++++ b/crates/editor/src/config.rs
+@@ -249,7 +249,10 @@ impl Editor {
+                 SoftWrap::Bounded(soft_wrap) => {
+                     wrap_guides.push((soft_wrap as usize, true));
+                 }
+-                SoftWrap::GitDiff | SoftWrap::None | SoftWrap::EditorWidth => {}
++                SoftWrap::GitDiff
++                | SoftWrap::None
++                | SoftWrap::EditorWidth
++                | SoftWrap::Column(_) => {}
+             }
+             wrap_guides.extend(settings.wrap_guides.iter().map(|guide| (*guide, false)))
+         }
+@@ -265,6 +268,9 @@ impl Editor {
+                 SoftWrap::None
+             }
+             language_settings::SoftWrap::EditorWidth => SoftWrap::EditorWidth,
++            language_settings::SoftWrap::FixedColumn => {
++                SoftWrap::Column(settings.preferred_line_length)
++            }
+             language_settings::SoftWrap::Bounded => {
+                 SoftWrap::Bounded(settings.preferred_line_length)
+             }
+@@ -274,15 +280,19 @@ impl Editor {
+     // Called by the element. This method is not designed to be called outside of the editor
+     // element's layout code because it does not notify when rewrapping is computed synchronously.
+     pub(super) fn set_wrap_width(&self, width: Option<Pixels>, cx: &mut App) -> bool {
++        let break_words = matches!(self.soft_wrap_mode(cx), SoftWrap::Column(_));
+         if self.is_empty(cx) {
+             self.placeholder_display_map
+                 .as_ref()
+                 .map_or(false, |display_map| {
+-                    display_map.update(cx, |map, cx| map.set_wrap_width(width, cx))
++                    display_map.update(cx, |map, cx| {
++                        map.set_wrap_width_and_break_words(width, break_words, cx)
++                    })
+                 })
+         } else {
+-            self.display_map
+-                .update(cx, |map, cx| map.set_wrap_width(width, cx))
++            self.display_map.update(cx, |map, cx| {
++                map.set_wrap_width_and_break_words(width, break_words, cx)
++            })
+         }
+     }
+ 
+@@ -293,7 +303,9 @@ impl Editor {
+             let soft_wrap = match self.soft_wrap_mode(cx) {
+                 SoftWrap::GitDiff => return,
+                 SoftWrap::None => language_settings::SoftWrap::EditorWidth,
+-                SoftWrap::EditorWidth | SoftWrap::Bounded(_) => language_settings::SoftWrap::None,
++                SoftWrap::EditorWidth | SoftWrap::Bounded(_) | SoftWrap::Column(_) => {
++                    language_settings::SoftWrap::None
++                }
+             };
+             self.soft_wrap_mode_override = Some(soft_wrap);
+         }
+diff --git a/crates/editor/src/display_map.rs b/crates/editor/src/display_map.rs
+index c6c19d5..908bb2e 100644
+--- a/crates/editor/src/display_map.rs
++++ b/crates/editor/src/display_map.rs
+@@ -1248,6 +1248,17 @@ impl DisplayMap {
+             .update(cx, |map, cx| map.set_wrap_width(width, cx))
+     }
+ 
++    pub fn set_wrap_width_and_break_words(
++        &self,
++        width: Option<Pixels>,
++        break_words: bool,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        self.wrap_map.update(cx, |map, cx| {
++            map.set_wrap_width_and_break_words(width, break_words, cx)
++        })
++    }
++
+     #[instrument(skip_all)]
+     pub fn update_fold_widths(
+         &mut self,
+diff --git a/crates/editor/src/display_map/wrap_map.rs b/crates/editor/src/display_map/wrap_map.rs
+index 27177a0..aa39995 100644
+--- a/crates/editor/src/display_map/wrap_map.rs
++++ b/crates/editor/src/display_map/wrap_map.rs
+@@ -46,6 +46,7 @@ pub struct WrapMap {
+     interpolated_edits: WrapPatch,
+     edits_since_sync: WrapPatch,
+     wrap_width: Option<Pixels>,
++    break_words: bool,
+     background_task: Option<Task<()>>,
+     font_with_size: (Font, Pixels),
+ }
+@@ -184,11 +185,23 @@ impl WrapMap {
+         font_size: Pixels,
+         wrap_width: Option<Pixels>,
+         cx: &mut App,
++    ) -> (Entity<Self>, WrapSnapshot) {
++        Self::new_with_break_words(tab_snapshot, font, font_size, wrap_width, false, cx)
++    }
++
++    pub fn new_with_break_words(
++        tab_snapshot: TabSnapshot,
++        font: Font,
++        font_size: Pixels,
++        wrap_width: Option<Pixels>,
++        break_words: bool,
++        cx: &mut App,
+     ) -> (Entity<Self>, WrapSnapshot) {
+         let handle = cx.new(|cx| {
+             let mut this = Self {
+                 font_with_size: (font, font_size),
+                 wrap_width: None,
++                break_words,
+                 pending_edits: Default::default(),
+                 interpolated_edits: Default::default(),
+                 edits_since_sync: Default::default(),
+@@ -253,16 +266,26 @@ impl WrapMap {
+     }
+ 
+     #[ztracing::instrument(skip_all)]
+-    pub fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut Context<Self>) -> bool {
+-        if wrap_width == self.wrap_width {
++    pub fn set_wrap_width_and_break_words(
++        &mut self,
++        wrap_width: Option<Pixels>,
++        break_words: bool,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        if wrap_width == self.wrap_width && break_words == self.break_words {
+             return false;
+         }
+ 
+         self.wrap_width = wrap_width;
++        self.break_words = break_words;
+         self.rewrap(cx);
+         true
+     }
+ 
++    pub fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut Context<Self>) -> bool {
++        self.set_wrap_width_and_break_words(wrap_width, self.break_words, cx)
++    }
++
+     #[ztracing::instrument(skip_all)]
+     fn rewrap(&mut self, cx: &mut Context<Self>) {
+         self.background_task.take();
+@@ -278,6 +301,7 @@ impl WrapMap {
+                 LineFragmentBuilder::new(text_system.clone(), &font, font_size);
+             let mut line_wrapper = text_system.line_wrapper(font, font_size);
+             let tab_snapshot = new_snapshot.tab_snapshot.clone();
++            let break_words = self.break_words;
+             let total_rows = tab_snapshot.max_point().row() as usize + 1;
+             let range = TabPoint::zero()..tab_snapshot.max_point();
+             let tab_edits = [TabEdit {
+@@ -292,6 +316,7 @@ impl WrapMap {
+                     wrap_width,
+                     &mut line_wrapper,
+                     &mut fragment_builder,
++                    break_words,
+                 ));
+                 self.snapshot = new_snapshot;
+                 self.edits_since_sync = self.edits_since_sync.compose(&edits);
+@@ -304,6 +329,7 @@ impl WrapMap {
+                             wrap_width,
+                             &mut line_wrapper,
+                             &mut fragment_builder,
++                            break_words,
+                         )
+                         .await;
+                     (new_snapshot, edits)
+@@ -381,6 +407,7 @@ impl WrapMap {
+             let mut fragment_builder =
+                 LineFragmentBuilder::new(text_system.clone(), &font, font_size);
+             let mut line_wrapper = text_system.line_wrapper(font, font_size);
++            let break_words = self.break_words;
+ 
+             let update_passes = pending_edits.len();
+             let total_new_rows = pending_edits
+@@ -397,6 +424,7 @@ impl WrapMap {
+                         wrap_width,
+                         &mut line_wrapper,
+                         &mut fragment_builder,
++                        break_words,
+                     ));
+                     wrap_edits = wrap_edits.compose(&edits);
+                 }
+@@ -413,6 +441,7 @@ impl WrapMap {
+                                 wrap_width,
+                                 &mut line_wrapper,
+                                 &mut fragment_builder,
++                                break_words,
+                             )
+                             .await;
+                         edits = edits.compose(&wrap_edits);
+@@ -560,6 +589,7 @@ impl WrapSnapshot {
+         wrap_width: Pixels,
+         line_wrapper: &mut LineWrapper,
+         fragment_builder: &mut LineFragmentBuilder,
++        break_words: bool,
+     ) -> WrapPatch {
+         #[derive(Debug)]
+         struct RowEdit {
+@@ -652,7 +682,11 @@ impl WrapSnapshot {
+                     }
+ 
+                     let mut prev_boundary_ix = 0;
+-                    for boundary in line_wrapper.wrap_line(&line_fragments, wrap_width) {
++                    for boundary in line_wrapper.wrap_line_with_word_breaks(
++                        &line_fragments,
++                        wrap_width,
++                        break_words,
++                    ) {
+                         let wrapped = &line[prev_boundary_ix..boundary.ix];
+                         push_isomorphic(&mut edit_transforms, TextSummary::from(wrapped));
+                         edit_transforms.push(Transform::wrap(boundary.next_indent));
+diff --git a/crates/editor/src/editor.rs b/crates/editor/src/editor.rs
+index 9602d85..70e1f1a 100644
+--- a/crates/editor/src/editor.rs
++++ b/crates/editor/src/editor.rs
+@@ -522,6 +522,8 @@ pub enum SoftWrap {
+     None,
+     /// Soft wrap lines that exceed the editor width.
+     EditorWidth,
++    /// Soft wrap at a fixed column, breaking inside words.
++    Column(u32),
+     /// Soft wrap line at the preferred line length or the editor width (whichever is smaller).
+     Bounded(u32),
+ }
+diff --git a/crates/editor/src/element.rs b/crates/editor/src/element.rs
+index 2f7cbb1..053b0cc 100644
+--- a/crates/editor/src/element.rs
++++ b/crates/editor/src/element.rs
+@@ -10830,6 +10830,7 @@ fn calculate_wrap_width(
+         SoftWrap::GitDiff => None,
+         SoftWrap::None => Some(wrap_width_for(MAX_LINE_LEN as u32 / 2)),
+         SoftWrap::EditorWidth => Some(editor_width),
++        SoftWrap::Column(column) => Some(wrap_width_for(column)),
+         SoftWrap::Bounded(column) => Some(editor_width.min(wrap_width_for(column))),
+     }
+ }
+diff --git a/crates/gpui/src/text_system/line_wrapper.rs b/crates/gpui/src/text_system/line_wrapper.rs
+index 678e9e0..578bc21 100644
+--- a/crates/gpui/src/text_system/line_wrapper.rs
++++ b/crates/gpui/src/text_system/line_wrapper.rs
+@@ -41,6 +41,16 @@ impl LineWrapper {
+         &'a mut self,
+         fragments: &'a [LineFragment],
+         wrap_width: Pixels,
++    ) -> impl Iterator<Item = Boundary> + 'a {
++        self.wrap_line_with_word_breaks(fragments, wrap_width, false)
++    }
++
++    /// Wrap a line, optionally allowing breaks inside words.
++    pub fn wrap_line_with_word_breaks<'a>(
++        &'a mut self,
++        fragments: &'a [LineFragment],
++        wrap_width: Pixels,
++        break_words: bool,
+     ) -> impl Iterator<Item = Boundary> + 'a {
+         let mut width = px(0.);
+         let mut first_non_whitespace_ix = None;
+@@ -65,12 +75,12 @@ impl LineWrapper {
+                             continue;
+                         }
+ 
+-                        if Self::is_word_char(c) {
++                        if !break_words && Self::is_word_char(c) {
+                             if prev_c == ' ' && c != ' ' && first_non_whitespace_ix.is_some() {
+                                 last_candidate_ix = ix;
+                                 last_candidate_width = width;
+                             }
+-                        } else {
++                        } else if !break_words {
+                             // CJK may not be space separated, e.g.: `Hello world你好世界`
+                             if c != ' ' && first_non_whitespace_ix.is_some() {
+                                 last_candidate_ix = ix;
+@@ -90,7 +100,7 @@ impl LineWrapper {
+                         width: element_width,
+                         ..
+                     } => {
+-                        if prev_c == ' ' && first_non_whitespace_ix.is_some() {
++                        if !break_words && prev_c == ' ' && first_non_whitespace_ix.is_some() {
+                             last_candidate_ix = ix;
+                             last_candidate_width = width;
+                         }
+diff --git a/crates/language/src/language.rs b/crates/language/src/language.rs
+index a7791c5..dbe9cdf 100644
+--- a/crates/language/src/language.rs
++++ b/crates/language/src/language.rs
+@@ -126,6 +126,7 @@ pub(crate) fn to_settings_soft_wrap(value: language_core::SoftWrap) -> settings:
+         language_core::SoftWrap::None => settings::SoftWrap::None,
+         language_core::SoftWrap::PreferLine => settings::SoftWrap::PreferLine,
+         language_core::SoftWrap::EditorWidth => settings::SoftWrap::EditorWidth,
++        language_core::SoftWrap::FixedColumn => settings::SoftWrap::FixedColumn,
+         language_core::SoftWrap::Bounded => settings::SoftWrap::Bounded,
+     }
+ }
+diff --git a/crates/language_core/src/language_config.rs b/crates/language_core/src/language_config.rs
+index 6a0059f..61b6562 100644
+--- a/crates/language_core/src/language_config.rs
++++ b/crates/language_core/src/language_config.rs
+@@ -17,6 +17,8 @@ pub enum SoftWrap {
+     PreferLine,
+     /// Soft wrap lines that exceed the editor width.
+     EditorWidth,
++    /// Soft wrap lines at the preferred line length, breaking inside words.
++    FixedColumn,
+     /// Soft wrap line at the preferred line length or the editor width (whichever is smaller).
+     #[serde(alias = "preferred_line_length")]
+     Bounded,
+diff --git a/crates/settings_content/src/language.rs b/crates/settings_content/src/language.rs
+index e7e9e3a..6e327cd 100644
+--- a/crates/settings_content/src/language.rs
++++ b/crates/settings_content/src/language.rs
+@@ -442,6 +442,8 @@ pub enum SoftWrap {
+     PreferLine,
+     /// Soft wrap lines that exceed the editor width.
+     EditorWidth,
++    /// Soft wrap lines at the preferred line length, breaking inside words.
++    FixedColumn,
+     /// Soft wrap line at the preferred line length or the editor width (whichever is smaller).
+     #[serde(alias = "preferred_line_length")]
+     Bounded,

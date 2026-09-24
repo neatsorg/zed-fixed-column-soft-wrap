@@ -6,7 +6,7 @@
 
 ## 現在の状態
 
-これは実装前の準備段階です。公式 Zed の基準コミット、パッチ系列、再現用 checkout の作成スクリプト、仕様と検証項目を固定しています。
+現在は最初の実装パッチまで作成済みです。公式 Zed の基準コミット、パッチ系列、再現用 checkout の作成スクリプト、仕様と検証項目を同じリポジトリで固定しています。フルの Rust ビルドは依存 crate の取得環境が必要なため、まだ完了していません。
 
 ## 準備と検証
 
@@ -15,7 +15,7 @@
 ./scripts/check
 ```
 
-`prepare` は [sources.lock.toml](sources.lock.toml) の commit から `.checkout/zed` を作成し、`patches/series` の各パッチを順に適用します。`check` は作業ツリーの差分と Rust の対象 crate を確認します。パッチがまだないため、現段階の check は基準 checkout の検証までを行います。
+`prepare` は [sources.lock.toml](sources.lock.toml) の commit から `.checkout/zed` を作成し、`patches/series` の各パッチを順に適用します。`check` は作業ツリーの差分を確認します。
 
 ## 想定する設定
 
@@ -27,4 +27,3 @@
 ```
 
 既存の `none`、`editor_width`、`preferred_line_length`、`bounded` は変更せず、新しいモードだけを追加する方針です。設定名と既存バージョンとの互換性は実装時に確定します。
-
